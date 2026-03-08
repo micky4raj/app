@@ -1,0 +1,10 @@
+pandas
+pandas_ta
+yfinance
+requests
+scipy
+streamlit
+plotly
+torch
+nltk
+apscheduler
