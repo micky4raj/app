@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
+import Razorpay from 'razorpay'
+import crypto from 'node:crypto'
 
 const uri = process.env.MONGO_URL
 const dbName = process.env.DB_NAME || 'jigyasa_fabrics'
@@ -12,6 +14,18 @@ async function getDb() {
     await cachedClient.connect()
   }
   return cachedClient.db(dbName)
+}
+
+// Razorpay client (server-only)
+let rzp = null
+function getRzp() {
+  if (!rzp) {
+    rzp = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    })
+  }
+  return rzp
 }
 
 // ---------- SEED DATA ----------
@@ -202,8 +216,247 @@ async function handler(request, ctx) {
   const method = request.method
 
   try {
+    // ==== RAZORPAY WEBHOOK (must use raw body BEFORE any parse) ====
+    if (method === 'POST' && path === 'razorpay/webhook') {
+      const raw = Buffer.from(await request.arrayBuffer())
+      const received = request.headers.get('x-razorpay-signature') || ''
+      const secret = process.env.RAZORPAY_WEBHOOK_SECRET || ''
+      const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex')
+      const valid = expected.length === received.length &&
+        crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received))
+      if (!valid) return new NextResponse('Invalid signature', { status: 400 })
+
+      const event = JSON.parse(raw.toString('utf8'))
+      const eventId = request.headers.get('x-razorpay-event-id') || event.id
+      const db = await getDb()
+
+      // Idempotency
+      const existing = await db.collection('orders').findOne({ webhookEvents: eventId })
+      if (existing) return NextResponse.json({ received: true })
+
+      if (event.event === 'payment.captured') {
+        const entity = event.payload?.payment?.entity
+        if (entity?.order_id) {
+          await db.collection('orders').updateOne(
+            { razorpayOrderId: entity.order_id },
+            {
+              $set: {
+                status: 'confirmed',
+                'payment.status': 'captured',
+                'payment.razorpayPaymentId': entity.id,
+                updatedAt: new Date(),
+              },
+              $addToSet: { webhookEvents: eventId },
+            }
+          )
+        }
+      } else if (event.event === 'payment.failed') {
+        const entity = event.payload?.payment?.entity
+        if (entity?.order_id) {
+          await db.collection('orders').updateOne(
+            { razorpayOrderId: entity.order_id },
+            {
+              $set: { 'payment.status': 'failed', updatedAt: new Date() },
+              $addToSet: { webhookEvents: eventId },
+            }
+          )
+        }
+      }
+      return NextResponse.json({ received: true })
+    }
     const db = await getDb()
     await ensureSeed(db)
+
+    // =========== EMERGENT GOOGLE AUTH ===========
+    // POST /api/auth/session   Body: { session_id }
+    // Exchanges session_id for user profile via Emergent, stores session, sets cookie.
+    if (method === 'POST' && path === 'auth/session') {
+      const { session_id } = await request.json()
+      if (!session_id) return NextResponse.json({ error: 'session_id required' }, { status: 400 })
+
+      const emergentRes = await fetch(
+        'https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data',
+        { headers: { 'X-Session-ID': session_id } }
+      )
+      if (!emergentRes.ok) {
+        return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+      }
+      const profile = await emergentRes.json()
+      // profile: { id, email, name, picture, session_token }
+
+      const userId = profile.id || profile.email
+      const now = new Date()
+      await db.collection('users').updateOne(
+        { id: userId },
+        {
+          $set: {
+            id: userId,
+            email: profile.email,
+            name: profile.name,
+            picture: profile.picture,
+            updatedAt: now,
+          },
+          $setOnInsert: { createdAt: now },
+        },
+        { upsert: true }
+      )
+
+      const sessionToken = profile.session_token || session_id
+      const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000)
+      await db.collection('sessions').updateOne(
+        { token: sessionToken },
+        {
+          $set: {
+            token: sessionToken,
+            userId,
+            user: { id: userId, email: profile.email, name: profile.name, picture: profile.picture },
+            expiresAt,
+          },
+        },
+        { upsert: true }
+      )
+
+      const res = NextResponse.json({ ok: true, user: { id: userId, email: profile.email, name: profile.name, picture: profile.picture } })
+      res.cookies.set('jf_session', sessionToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: '/',
+        maxAge: 7 * 24 * 3600,
+      })
+      return res
+    }
+
+    // GET /api/auth/me
+    if (method === 'GET' && path === 'auth/me') {
+      const token = request.cookies.get('jf_session')?.value
+      if (!token) return NextResponse.json({ user: null })
+      const sess = await db.collection('sessions').findOne({ token }, { projection: { _id: 0 } })
+      if (!sess || new Date(sess.expiresAt) < new Date()) {
+        return NextResponse.json({ user: null })
+      }
+      return NextResponse.json({ user: sess.user })
+    }
+
+    // POST /api/auth/logout
+    if (method === 'POST' && path === 'auth/logout') {
+      const token = request.cookies.get('jf_session')?.value
+      if (token) await db.collection('sessions').deleteOne({ token })
+      const res = NextResponse.json({ ok: true })
+      res.cookies.set('jf_session', '', { httpOnly: true, secure: true, sameSite: 'none', path: '/', maxAge: 0 })
+      return res
+    }
+
+    // GET /api/auth/orders  (logged-in user's orders)
+    if (method === 'GET' && path === 'auth/orders') {
+      const token = request.cookies.get('jf_session')?.value
+      if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      const sess = await db.collection('sessions').findOne({ token })
+      if (!sess) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      const orders = await db.collection('orders')
+        .find({ 'address.userEmail': sess.user.email }, { projection: { _id: 0 } })
+        .sort({ createdAt: -1 }).limit(50).toArray()
+      return NextResponse.json({ orders })
+    }
+
+    // =========== RAZORPAY ===========
+    // POST /api/razorpay/create-order  { items: [{id, qty}], address }
+    // Server calculates authoritative amount from DB products and creates Razorpay order.
+    if (method === 'POST' && path === 'razorpay/create-order') {
+      const body = await request.json()
+      const { items = [] } = body
+      if (!items.length) return NextResponse.json({ error: 'No items' }, { status: 400 })
+
+      // Fetch authoritative product prices from DB
+      const ids = items.map(i => i.id)
+      const products = await db.collection('products').find({ id: { $in: ids } }, { projection: { _id: 0 } }).toArray()
+      const priceMap = Object.fromEntries(products.map(p => [p.id, p]))
+
+      let subtotal = 0
+      const validated = []
+      for (const it of items) {
+        const p = priceMap[it.id]
+        if (!p) return NextResponse.json({ error: `Product ${it.id} not found` }, { status: 400 })
+        const qty = Math.max(1, Number(it.qty) || 1)
+        subtotal += p.price * qty
+        validated.push({ id: p.id, name: p.name, price: p.price, mrp: p.mrp, image: p.image, unit: p.unit, qty })
+      }
+      const shipping = subtotal > 999 ? 0 : 79
+      const tax = Math.round(subtotal * 0.05)
+      const total = subtotal + shipping + tax
+      const amountPaise = total * 100
+
+      const receipt = 'rcpt_' + uuidv4().replaceAll('-', '').slice(0, 20)
+      const rzpOrder = await getRzp().orders.create({
+        amount: amountPaise,
+        currency: 'INR',
+        receipt,
+        notes: { source: 'jigyasa_fabrics' },
+      })
+
+      return NextResponse.json({
+        ok: true,
+        orderId: rzpOrder.id,
+        amount: amountPaise,
+        currency: 'INR',
+        keyId: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        receipt,
+        breakdown: { items: validated, subtotal, shipping, tax, total },
+      })
+    }
+
+    // POST /api/razorpay/verify  { razorpay_order_id, razorpay_payment_id, razorpay_signature, address, breakdown }
+    // Verifies HMAC and, on success, creates the order in our DB.
+    if (method === 'POST' && path === 'razorpay/verify') {
+      const body = await request.json()
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature, address, breakdown } = body
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return NextResponse.json({ error: 'Incomplete payment response' }, { status: 400 })
+      }
+      const message = `${razorpay_order_id}|${razorpay_payment_id}`
+      const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(message).digest('hex')
+      const valid = expected.length === razorpay_signature.length &&
+        crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(razorpay_signature))
+      if (!valid) return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
+
+      // Re-validate breakdown from DB to prevent tampering
+      const items = breakdown?.items || []
+      const ids = items.map(i => i.id)
+      const products = await db.collection('products').find({ id: { $in: ids } }, { projection: { _id: 0 } }).toArray()
+      const priceMap = Object.fromEntries(products.map(p => [p.id, p]))
+      let subtotal = 0
+      for (const it of items) {
+        const p = priceMap[it.id]
+        if (!p) return NextResponse.json({ error: 'Product changed' }, { status: 400 })
+        subtotal += p.price * Math.max(1, Number(it.qty) || 1)
+      }
+      const shipping = subtotal > 999 ? 0 : 79
+      const tax = Math.round(subtotal * 0.05)
+      const total = subtotal + shipping + tax
+
+      const order = {
+        id: uuidv4(),
+        orderNumber: 'JF' + Date.now().toString().slice(-8),
+        items,
+        address,
+        payment: {
+          method: 'RAZORPAY',
+          status: 'paid',
+          razorpayOrderId: razorpay_order_id,
+          razorpayPaymentId: razorpay_payment_id,
+        },
+        razorpayOrderId: razorpay_order_id,
+        subtotal, shipping, tax, total,
+        status: 'confirmed',
+        awb: 'AWB' + Math.floor(1e9 + Math.random() * 9e9),
+        trackingUrl: 'https://shiprocket.co/tracking/',
+        estimatedDelivery: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString(),
+        createdAt: new Date().toISOString(),
+      }
+      await db.collection('orders').insertOne({ ...order })
+      return NextResponse.json({ ok: true, order })
+    }
 
     // GET /api/products
     if (method === 'GET' && path === 'products') {

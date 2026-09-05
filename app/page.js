@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, ShoppingBag, Star, Heart, Plus, Minus, X, MapPin, Truck, ShieldCheck,
   ChevronRight, Package, Sparkles, IndianRupee, CheckCircle2, Filter, Copy, PhoneCall,
+  LogIn, LogOut, User as UserIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,8 @@ import { Separator } from '@/components/ui/separator'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from '@/components/ui/dropdown-menu'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 const CATEGORIES = ['All', 'Saree', 'Suit Set', 'Cotton Fabric', 'Silk Fabric']
 const BRAND = {
@@ -31,6 +34,20 @@ const BRAND = {
 
 const rupee = (n) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n || 0)
+
+// Load Razorpay Checkout script once
+function loadRazorpayScript() {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') return reject()
+    if (window.Razorpay) return resolve()
+    const s = document.createElement('script')
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    s.async = true
+    s.onload = () => resolve()
+    s.onerror = () => reject(new Error('Failed to load Razorpay'))
+    document.body.appendChild(s)
+  })
+}
 
 function App() {
   const [products, setProducts] = useState([])
@@ -48,6 +65,59 @@ function App() {
 
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [orderResult, setOrderResult] = useState(null)
+
+  // ---- Auth
+  const [user, setUser] = useState(null)
+  const [authProcessing, setAuthProcessing] = useState(false)
+
+  // Fetch current user on mount + handle Emergent auth callback (#session_id=...)
+  useEffect(() => {
+    // Handle Emergent auth callback
+    const hash = typeof window !== 'undefined' ? window.location.hash : ''
+    if (hash.includes('session_id=')) {
+      const sessionId = new URLSearchParams(hash.slice(1)).get('session_id')
+      if (sessionId) {
+        setAuthProcessing(true)
+        fetch('/api/auth/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+          credentials: 'include',
+        })
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              setUser(d.user)
+              toast.success(`Welcome, ${d.user.name || d.user.email}!`)
+            } else {
+              toast.error('Sign in failed')
+            }
+          })
+          .catch(() => toast.error('Sign in failed'))
+          .finally(() => {
+            setAuthProcessing(false)
+            // Clean the URL
+            window.history.replaceState(null, '', window.location.pathname)
+          })
+        return
+      }
+    }
+    // Otherwise fetch existing session
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => setUser(d.user))
+      .catch(() => {})
+  }, [])
+
+  const signIn = () => {
+    const redirect = window.location.origin + window.location.pathname
+    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirect)}`
+  }
+  const signOut = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+    setUser(null)
+    toast.success('Signed out')
+  }
 
   // ---- load cart from localStorage
   useEffect(() => {
@@ -98,7 +168,7 @@ function App() {
 
   return (
     <div className="min-h-screen">
-      <Header cartCount={cartCount} onCartClick={() => setCartOpen(true)} search={search} setSearch={setSearch} />
+      <Header cartCount={cartCount} onCartClick={() => setCartOpen(true)} search={search} setSearch={setSearch} user={user} onSignIn={signIn} onSignOut={signOut} authProcessing={authProcessing} />
 
       <Hero />
 
@@ -207,6 +277,7 @@ function App() {
         onOpenChange={setCheckoutOpen}
         cart={cart}
         subtotal={cartTotal}
+        user={user}
         onSuccess={(order) => {
           setCart([])
           setCheckoutOpen(false)
@@ -224,17 +295,22 @@ function App() {
 }
 
 // ---------- HEADER ----------
-function Header({ cartCount, onCartClick, search, setSearch }) {
+function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onSignOut, authProcessing }) {
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-neutral-200">
       <div className="container mx-auto px-4 h-16 md:h-20 flex items-center gap-3 md:gap-6">
         <a href="/" className="flex items-center gap-2 shrink-0">
-          <div className="h-9 w-9 md:h-10 md:w-10 rounded-full bg-gradient-to-br from-[#8b1e3f] to-[#c14b6c] flex items-center justify-center text-white font-bold shadow-md">
-            J
-          </div>
+          <img
+            src="/logo-icon.png"
+            alt="Label Jigyasa"
+            className="h-11 w-11 md:h-12 md:w-12 rounded-full shadow-md ring-2 ring-[#8b1e3f]/20 object-cover bg-[#4a0c1c]"
+          />
           <div className="hidden sm:block">
-            <div className="font-bold text-[15px] md:text-base leading-tight text-[#8b1e3f]">Jigyasa Fabrics</div>
-            <div className="text-[10px] md:text-[11px] text-neutral-500 -mt-0.5 italic">Explore Plus <span className="text-yellow-500">★</span></div>
+            <div className="font-bold text-[15px] md:text-base leading-tight text-[#8b1e3f] tracking-wide">
+              <span className="text-[10px] md:text-xs font-semibold tracking-[0.2em] text-[#c14b6c] block -mb-0.5">LABEL</span>
+              Jigyasa
+            </div>
+            <div className="text-[9px] md:text-[10px] text-neutral-500 -mt-0.5 italic tracking-wide">Indian Hand, Global Heart</div>
           </div>
         </a>
 
@@ -249,6 +325,43 @@ function Header({ cartCount, onCartClick, search, setSearch }) {
             />
           </div>
         </div>
+
+        {/* Auth */}
+        {authProcessing ? (
+          <div className="text-xs text-neutral-500 px-3">Signing in...</div>
+        ) : user ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="flex items-center gap-2 hover:bg-neutral-100 rounded-full p-1 pr-3 transition">
+                <Avatar className="h-8 w-8">
+                  <AvatarImage src={user.picture} alt={user.name} />
+                  <AvatarFallback className="bg-[#8b1e3f] text-white text-xs">
+                    {(user.name || user.email || 'U').charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="hidden md:inline text-sm font-medium max-w-[120px] truncate">{user.name?.split(' ')[0] || 'Account'}</span>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel>
+                <div className="font-semibold text-sm">{user.name}</div>
+                <div className="text-xs text-neutral-500 font-normal truncate">{user.email}</div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem><UserIcon className="h-4 w-4 mr-2" /> My Orders</DropdownMenuItem>
+              <DropdownMenuItem><Heart className="h-4 w-4 mr-2" /> Wishlist</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onSignOut} className="text-red-600 focus:text-red-700">
+                <LogOut className="h-4 w-4 mr-2" /> Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button variant="outline" size="sm" onClick={onSignIn} className="border-[#8b1e3f] text-[#8b1e3f] hover:bg-[#8b1e3f] hover:text-white">
+            <LogIn className="h-4 w-4 md:mr-2" />
+            <span className="hidden md:inline">Sign In</span>
+          </Button>
+        )}
 
         <Button variant="ghost" size="sm" onClick={onCartClick} className="relative">
           <ShoppingBag className="h-5 w-5" />
@@ -275,7 +388,7 @@ function Hero() {
           transition={{ duration: 0.6 }}
         >
           <Badge className="bg-[#8b1e3f] hover:bg-[#8b1e3f] text-white mb-4">
-            <Sparkles className="h-3 w-3 mr-1" /> Summer Collection 2025 — Up to 60% OFF
+            <Sparkles className="h-3 w-3 mr-1" /> Indian Hand, Global Heart — Since 2025
           </Badge>
           <h1 className="text-3xl md:text-5xl font-bold text-neutral-900 leading-tight">
             Premium Indian Fabrics.
@@ -609,7 +722,7 @@ function Row({ label, value }) {
 }
 
 // ---------- CHECKOUT ----------
-function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess }) {
+function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user }) {
   const [step, setStep] = useState(1) // 1=address, 2=payment
   const [placing, setPlacing] = useState(false)
   const [address, setAddress] = useState({
@@ -617,7 +730,12 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess }) {
   })
   const [payment, setPayment] = useState('UPI')
 
-  useEffect(() => { if (open) setStep(1) }, [open])
+  useEffect(() => {
+    if (open) {
+      setStep(1)
+      if (user) setAddress(a => ({ ...a, name: a.name || user.name || '', email: a.email || user.email || '' }))
+    }
+  }, [open, user])
 
   const shipping = subtotal > 999 || subtotal === 0 ? 0 : 79
   const tax = Math.round(subtotal * 0.05)
@@ -628,24 +746,97 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess }) {
   const placeOrder = async () => {
     setPlacing(true)
     try {
-      const r = await fetch('/api/orders', {
+      // COD -> existing flow
+      if (payment === 'COD') {
+        const r = await fetch('/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: cart, address: { ...address, userEmail: user?.email }, payment: { method: payment },
+            subtotal, shipping, tax, total,
+          }),
+        })
+        const d = await r.json()
+        if (d.ok) {
+          toast.success('Order placed successfully! 🎉')
+          onSuccess(d.order)
+        } else {
+          toast.error(d.error || 'Failed to place order')
+        }
+        setPlacing(false)
+        return
+      }
+
+      // Razorpay flow for UPI / CARD / NETBANKING
+      // 1. Load checkout.js if not already
+      await loadRazorpayScript()
+      // 2. Create Razorpay order on server
+      const cr = await fetch('/api/razorpay/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: cart, address, payment: { method: payment },
-          subtotal, shipping, tax, total,
-        }),
+        body: JSON.stringify({ items: cart.map(i => ({ id: i.id, qty: i.qty })) }),
       })
-      const d = await r.json()
-      if (d.ok) {
-        toast.success('Order placed successfully! 🎉')
-        onSuccess(d.order)
-      } else {
-        toast.error(d.error || 'Failed to place order')
+      const orderData = await cr.json()
+      if (!orderData.ok) {
+        toast.error(orderData.error || 'Could not initialize payment')
+        return
       }
+      // 3. Open Razorpay modal
+      const options = {
+        key: orderData.keyId,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: 'Jigyasa Fabrics',
+        description: `${cart.length} item(s) • ${orderData.receipt}`,
+        order_id: orderData.orderId,
+        prefill: {
+          name: address.name,
+          email: address.email || user?.email || '',
+          contact: address.phone,
+        },
+        notes: { pincode: address.pincode, city: address.city },
+        theme: { color: '#8b1e3f' },
+        method: payment === 'UPI' ? { upi: true, card: false, netbanking: false, wallet: false }
+          : payment === 'CARD' ? { card: true, upi: false, netbanking: false, wallet: false }
+          : payment === 'NETBANKING' ? { netbanking: true, upi: false, card: false, wallet: false }
+          : undefined,
+        handler: async (response) => {
+          try {
+            const vr = await fetch('/api/razorpay/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                address: { ...address, userEmail: user?.email },
+                breakdown: { items: cart.map(i => ({ id: i.id, qty: i.qty })) },
+              }),
+            })
+            const vd = await vr.json()
+            if (vd.ok) {
+              toast.success('Payment successful! 🎉')
+              onSuccess(vd.order)
+            } else {
+              toast.error(vd.error || 'Payment verification failed')
+            }
+          } catch { toast.error('Verification error') }
+          setPlacing(false)
+        },
+        modal: {
+          ondismiss: () => { setPlacing(false); toast.info('Payment cancelled') },
+        },
+      }
+      const rzp = new window.Razorpay(options)
+      rzp.on('payment.failed', (resp) => {
+        toast.error(resp?.error?.description || 'Payment failed')
+        setPlacing(false)
+      })
+      rzp.open()
     } catch (e) {
       toast.error('Network error')
-    } finally { setPlacing(false) }
+      setPlacing(false)
+    }
   }
 
   return (
@@ -800,14 +991,14 @@ function TrustStrip() {
 // ---------- FOOTER ----------
 function Footer() {
   return (
-    <footer className="mt-16 bg-neutral-900 text-neutral-300">
+    <footer className="mt-16 bg-[#4a0c1c] text-neutral-300">
       <div className="container mx-auto px-4 py-10 grid md:grid-cols-4 gap-8">
         <div>
-          <div className="flex items-center gap-2">
-            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-[#8b1e3f] to-[#c14b6c] flex items-center justify-center text-white font-bold">J</div>
-            <div className="font-bold text-white">Jigyasa Fabrics</div>
+          <div className="bg-[#4a0c1c] rounded-lg overflow-hidden inline-block">
+            <img src="/logo.jpg" alt="Label Jigyasa" className="h-28 w-auto" />
           </div>
-          <p className="text-sm mt-3 text-neutral-400">{BRAND.tag}</p>
+          <p className="text-sm mt-3 text-neutral-400 italic">Indian Hand, Global Heart · Since 2025</p>
+          <p className="text-sm mt-2 text-neutral-400">Handwoven fabrics from India's finest looms, delivered to your doorstep worldwide.</p>
         </div>
         <div>
           <h4 className="font-semibold text-white mb-3">Shop</h4>
@@ -824,14 +1015,14 @@ function Footer() {
         <div>
           <h4 className="font-semibold text-white mb-3">Contact</h4>
           <ul className="space-y-1 text-sm text-neutral-400">
-            <li>www.jigyasafabrics.in</li>
-            <li>support@jigyasafabrics.in</li>
+            <li>www.labeljigyasa.com</li>
+            <li>hello@labeljigyasa.com</li>
             <li>+91 98XXX XXXXX</li>
           </ul>
         </div>
       </div>
-      <div className="border-t border-neutral-800 py-4 text-center text-xs text-neutral-500">
-        © 2025 Jigyasa Fabrics. All rights reserved. GSTIN: XXAAAAA0000A1Z5
+      <div className="border-t border-[#6a1a30] py-4 text-center text-xs text-neutral-400">
+        © 2025 Label Jigyasa. All rights reserved. · GSTIN: XXAAAAA0000A1Z5
       </div>
     </footer>
   )

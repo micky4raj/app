@@ -2,8 +2,9 @@ import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
 
 export const metadata = {
-  title: 'Jigyasa Fabrics — Premium Indian Fabrics, Sarees & Suit Sets',
-  description: 'Shop premium Indian fabrics, silk sarees, cotton suit sets and designer textiles. Sold per meter, per piece or as bundled sets. Fast pan-India delivery.',
+  title: 'LABEL Jigyasa — Indian Hand, Global Heart | Premium Fabrics & Sarees',
+  description: 'Handpicked premium Indian fabrics, silk sarees, cotton suit sets and designer textiles. Sold per meter, per piece or as bundled sets. Indian Hand, Global Heart — Since 2025.',
+  icons: { icon: '/logo.jpg' },
 }
 
 export default function RootLayout({ children }) {

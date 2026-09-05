@@ -90,10 +90,8 @@ function LoginScreen({ onLogin }) {
         className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md"
       >
         <div className="text-center mb-6">
-          <div className="mx-auto h-14 w-14 rounded-full bg-gradient-to-br from-[#8b1e3f] to-[#c14b6c] flex items-center justify-center text-white font-bold text-2xl shadow-lg">
-            J
-          </div>
-          <h1 className="mt-4 text-2xl font-bold">Jigyasa Admin</h1>
+          <img src="/logo-icon.png" alt="Label Jigyasa" className="mx-auto h-24 w-24 rounded-full shadow-lg ring-4 ring-white object-cover bg-[#4a0c1c]" />
+          <h1 className="mt-4 text-2xl font-bold">Label Jigyasa Admin</h1>
           <p className="text-neutral-500 text-sm mt-1">Sign in to manage your store</p>
         </div>
         <form onSubmit={submit} className="space-y-4">
@@ -144,11 +142,9 @@ function Dashboard({ token, onLogout }) {
       <header className="bg-white border-b sticky top-0 z-30">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-[#8b1e3f] to-[#c14b6c] flex items-center justify-center text-white font-bold shadow">
-              J
-            </div>
+            <img src="/logo-icon.png" alt="Label Jigyasa" className="h-10 w-10 rounded-full shadow ring-2 ring-[#8b1e3f]/20 object-cover bg-[#4a0c1c]" />
             <div>
-              <div className="font-bold text-sm">Jigyasa Admin</div>
+              <div className="font-bold text-sm">Label Jigyasa Admin</div>
               <div className="text-[10px] text-neutral-500">Store Management Console</div>
             </div>
           </div>
