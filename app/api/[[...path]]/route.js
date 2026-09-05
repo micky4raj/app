@@ -290,6 +290,118 @@ async function handler(request, ctx) {
       return NextResponse.json({ order })
     }
 
+    // =========== ADMIN ROUTES ===========
+    const ADMIN_TOKEN = process.env.ADMIN_TOKEN_SECRET || 'jigyasa_admin_secret_2025'
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'
+    const isAuthed = () => request.headers.get('x-admin-token') === ADMIN_TOKEN
+
+    // POST /api/admin/login  { password }
+    if (method === 'POST' && path === 'admin/login') {
+      const { password } = await request.json()
+      if (password !== ADMIN_PASSWORD) {
+        return NextResponse.json({ ok: false, error: 'Invalid password' }, { status: 401 })
+      }
+      return NextResponse.json({ ok: true, token: ADMIN_TOKEN })
+    }
+
+    // Guard all admin routes below
+    if (path.startsWith('admin/') && path !== 'admin/login') {
+      if (!isAuthed()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // GET /api/admin/stats
+    if (method === 'GET' && path === 'admin/stats') {
+      const [productCount, orderCount, orders] = await Promise.all([
+        db.collection('products').countDocuments(),
+        db.collection('orders').countDocuments(),
+        db.collection('orders').find({}, { projection: { total: 1, status: 1, createdAt: 1, _id: 0 } }).toArray(),
+      ])
+      const revenue = orders.reduce((s, o) => s + (o.total || 0), 0)
+      const pendingOrders = orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length
+      const lowStock = await db.collection('products').countDocuments({ stock: { $lt: 20 } })
+      return NextResponse.json({ productCount, orderCount, revenue, pendingOrders, lowStock })
+    }
+
+    // GET /api/admin/products
+    if (method === 'GET' && path === 'admin/products') {
+      const products = await db.collection('products').find({}, { projection: { _id: 0 } }).sort({ createdAt: -1 }).toArray()
+      return NextResponse.json({ products })
+    }
+
+    // POST /api/admin/products  (create)
+    if (method === 'POST' && path === 'admin/products') {
+      const body = await request.json()
+      const doc = {
+        id: uuidv4(),
+        name: body.name,
+        category: body.category || 'Cotton Fabric',
+        fabric: body.fabric || 'Cotton',
+        unit: body.unit || 'meter',
+        price: Number(body.price) || 0,
+        mrp: Number(body.mrp) || 0,
+        image: body.image || '',
+        gsm: Number(body.gsm) || 0,
+        weave: body.weave || '',
+        stock: Number(body.stock) || 0,
+        rating: Number(body.rating) || 4.0,
+        ratingCount: Number(body.ratingCount) || 0,
+        colors: body.colors ? (Array.isArray(body.colors) ? body.colors : String(body.colors).split(',').map(c => c.trim())) : [],
+        description: body.description || '',
+        bestSeller: !!body.bestSeller,
+        createdAt: new Date(),
+      }
+      await db.collection('products').insertOne(doc)
+      const { _id, ...clean } = doc
+      return NextResponse.json({ ok: true, product: clean })
+    }
+
+    // PUT /api/admin/products/:id  (update)
+    if (method === 'PUT' && path.startsWith('admin/products/')) {
+      const id = path.split('/')[2]
+      const body = await request.json()
+      const update = { ...body }
+      delete update._id; delete update.id; delete update.createdAt
+      if (update.price !== undefined) update.price = Number(update.price)
+      if (update.mrp !== undefined) update.mrp = Number(update.mrp)
+      if (update.stock !== undefined) update.stock = Number(update.stock)
+      if (update.gsm !== undefined) update.gsm = Number(update.gsm)
+      if (update.colors && typeof update.colors === 'string') update.colors = update.colors.split(',').map(c => c.trim())
+      const r = await db.collection('products').findOneAndUpdate(
+        { id }, { $set: update }, { returnDocument: 'after', projection: { _id: 0 } }
+      )
+      const updated = r?.value || r
+      if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      return NextResponse.json({ ok: true, product: updated })
+    }
+
+    // DELETE /api/admin/products/:id
+    if (method === 'DELETE' && path.startsWith('admin/products/')) {
+      const id = path.split('/')[2]
+      await db.collection('products').deleteOne({ id })
+      return NextResponse.json({ ok: true })
+    }
+
+    // GET /api/admin/orders
+    if (method === 'GET' && path === 'admin/orders') {
+      const orders = await db.collection('orders').find({}, { projection: { _id: 0 } }).sort({ createdAt: -1 }).limit(200).toArray()
+      return NextResponse.json({ orders })
+    }
+
+    // PUT /api/admin/orders/:orderNumber  { status }
+    if (method === 'PUT' && path.startsWith('admin/orders/')) {
+      const orderNumber = path.split('/')[2]
+      const body = await request.json()
+      const update = {}
+      if (body.status) update.status = body.status
+      if (body.awb) update.awb = body.awb
+      const r = await db.collection('orders').findOneAndUpdate(
+        { orderNumber }, { $set: update }, { returnDocument: 'after', projection: { _id: 0 } }
+      )
+      const updated = r?.value || r
+      if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      return NextResponse.json({ ok: true, order: updated })
+    }
+
     // Health
     if (method === 'GET' && (path === '' || path === 'health')) {
       return NextResponse.json({ ok: true, service: 'jigyasa-fabrics', ts: Date.now() })
