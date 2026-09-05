@@ -485,6 +485,90 @@ async function handler(request, ctx) {
       return NextResponse.json({ ok: true, order })
     }
 
+    // =========== CHIPA AI CHATBOT ===========
+    // POST /api/chipa  { messages: [{role, content}], sessionId? }
+    if (method === 'POST' && path === 'chipa') {
+      const body = await request.json()
+      const { messages = [], sessionId } = body
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return NextResponse.json({ error: 'messages required' }, { status: 400 })
+      }
+      // Cap history to last 20 to control tokens
+      const trimmed = messages.slice(-20).map(m => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: String(m.content || '').slice(0, 4000),
+      }))
+
+      // Load top products for context (short)
+      const products = await db.collection('products')
+        .find({}, { projection: { _id: 0, name: 1, category: 1, productType: 1, price: 1, unit: 1, fabric: 1, stock: 1 } })
+        .limit(20).toArray()
+      const catalogSummary = products.map(p =>
+        `- ${p.name} (${p.category} • ${p.productType || 'Fabric'}) · ₹${p.price} per ${p.unit} · ${p.stock} in stock`
+      ).join('\n')
+
+      const systemPrompt = `You are Chipa, the friendly customer-facing assistant for Label Jigyasa — a boutique e-commerce store specializing in authentic Rajasthani hand block prints (Sanganer and Bagru).
+
+TONE: Warm, culturally respectful, concise. Use light Hindi phrases sparingly (namaste, dhanyavaad). Never overly formal.
+
+WHAT YOU KNOW:
+- Sanganer print: Fine, delicate floral motifs (butis) hand-block printed on cream/white cotton. Naturally dyed with vegetable colors. From Sanganer village, Rajasthan.
+- Bagru print: Bold geometric motifs using DABU (mud-resist) technique. Traditional indigo, rust, red, black on beige. From Bagru village, Rajasthan.
+- All products are 100% pure cotton, naturally dyed, handcrafted by master artisans.
+- Free shipping on orders above rupees 999. GST 5%. Easy 7-day returns. Pan-India delivery + international.
+- Payments: UPI, Cards, NetBanking, COD (via Razorpay).
+- Care: Hand wash cold water, dry in shade to preserve natural dyes.
+
+CURRENT CATALOG (live stock):
+${catalogSummary}
+
+BEHAVIOR RULES:
+- Never invent prices, stock, or delivery dates outside the catalog above.
+- Recommend 2-3 products max per query with product name + price.
+- For fabric-per-meter items, remind that 2.5m top + 2.5m bottom + 2.25m dupatta is roughly 7m total for a full suit.
+- For care questions, recommend hand wash separately in cold water.
+- If asked about something unrelated (weather, general chat), gently redirect to fabric queries.
+- Keep answers under 120 words unless the user asks for detailed care/technique info.`
+
+      try {
+        const llmRes = await fetch(`${process.env.EMERGENT_LLM_BASE_URL}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.EMERGENT_LLM_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: process.env.CHIPA_MODEL || 'gpt-4o-mini',
+            messages: [{ role: 'system', content: systemPrompt }, ...trimmed],
+            temperature: 0.5,
+            max_tokens: 400,
+          }),
+        })
+        if (!llmRes.ok) {
+          const errText = await llmRes.text()
+          console.error('LLM error:', errText)
+          return NextResponse.json({ error: 'Chipa is having a moment. Please try again.' }, { status: 502 })
+        }
+        const data = await llmRes.json()
+        const answer = data.choices?.[0]?.message?.content?.trim() || ''
+        if (!answer) return NextResponse.json({ error: 'Empty response' }, { status: 502 })
+
+        // Persist chat log
+        const convId = sessionId || uuidv4()
+        await db.collection('chats').insertOne({
+          sessionId: convId,
+          userMessage: trimmed[trimmed.length - 1]?.content || '',
+          answer,
+          model: data.model,
+          createdAt: new Date(),
+        })
+        return NextResponse.json({ answer, sessionId: convId, model: data.model })
+      } catch (e) {
+        console.error('Chipa error:', e)
+        return NextResponse.json({ error: 'Network error reaching Chipa' }, { status: 500 })
+      }
+    }
+
     // GET /api/products
     if (method === 'GET' && path === 'products') {
       const url = new URL(request.url)
