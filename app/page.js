@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, ShoppingBag, Star, Heart, Plus, Minus, X, MapPin, Truck, ShieldCheck,
   ChevronRight, Package, Sparkles, IndianRupee, CheckCircle2, Filter, Copy, PhoneCall,
-  LogIn, LogOut, User as UserIcon,
+  LogIn, LogOut, User as UserIcon, Download,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -26,10 +26,10 @@ import { Slider } from '@/components/ui/slider'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
-const CATEGORIES = ['All', 'Saree', 'Suit Set', 'Cotton Fabric', 'Silk Fabric']
+const CATEGORIES = ['All', 'Sanganer', 'Bagru']
 const BRAND = {
-  name: 'Jigyasa Fabrics',
-  tag: 'Woven with tradition. Delivered pan-India.',
+  name: 'Label Jigyasa',
+  tag: 'Indian Hand, Global Heart · Since 2025',
 }
 
 const rupee = (n) =>
@@ -69,6 +69,21 @@ function App() {
   // ---- Auth
   const [user, setUser] = useState(null)
   const [authProcessing, setAuthProcessing] = useState(false)
+
+  // ---- PWA install prompt
+  const [installPrompt, setInstallPrompt] = useState(null)
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); setInstallPrompt(e) }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+  const promptInstall = async () => {
+    if (!installPrompt) return
+    installPrompt.prompt()
+    const { outcome } = await installPrompt.userChoice
+    if (outcome === 'accepted') toast.success('Installing app...')
+    setInstallPrompt(null)
+  }
 
   // Fetch current user on mount + handle Emergent auth callback (#session_id=...)
   useEffect(() => {
@@ -168,7 +183,7 @@ function App() {
 
   return (
     <div className="min-h-screen">
-      <Header cartCount={cartCount} onCartClick={() => setCartOpen(true)} search={search} setSearch={setSearch} user={user} onSignIn={signIn} onSignOut={signOut} authProcessing={authProcessing} />
+      <Header cartCount={cartCount} onCartClick={() => setCartOpen(true)} search={search} setSearch={setSearch} user={user} onSignIn={signIn} onSignOut={signOut} authProcessing={authProcessing} installPrompt={installPrompt} onInstall={promptInstall} />
 
       <Hero />
 
@@ -178,7 +193,7 @@ function App() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-2xl md:text-3xl font-bold text-neutral-900">
-              {category === 'All' ? 'Featured Fabrics' : category}
+              {category === 'All' ? 'Featured Block Prints' : `${category} Prints`}
             </h2>
             <p className="text-sm text-neutral-500 mt-1">{products.length} products</p>
           </div>
@@ -295,15 +310,15 @@ function App() {
 }
 
 // ---------- HEADER ----------
-function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onSignOut, authProcessing }) {
+function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onSignOut, authProcessing, installPrompt, onInstall }) {
   return (
-    <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-neutral-200">
-      <div className="container mx-auto px-4 h-16 md:h-20 flex items-center gap-3 md:gap-6">
+    <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-neutral-200" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+      <div className="container mx-auto px-3 sm:px-4 h-16 md:h-20 flex items-center gap-2 sm:gap-3 md:gap-6">
         <a href="/" className="flex items-center gap-2 shrink-0">
           <img
             src="/logo-icon.png"
             alt="Label Jigyasa"
-            className="h-11 w-11 md:h-12 md:w-12 rounded-full shadow-md ring-2 ring-[#8b1e3f]/20 object-cover bg-[#4a0c1c]"
+            className="h-10 w-10 md:h-12 md:w-12 rounded-full shadow-md ring-2 ring-[#8b1e3f]/20 object-cover bg-[#4a0c1c]"
           />
           <div className="hidden sm:block">
             <div className="font-bold text-[15px] md:text-base leading-tight text-[#8b1e3f] tracking-wide">
@@ -314,25 +329,33 @@ function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onS
           </div>
         </a>
 
-        <div className="flex-1 max-w-2xl">
+        <div className="flex-1 max-w-2xl min-w-0">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400" />
             <Input
-              placeholder="Search sarees, cotton, silk, suit sets..."
+              placeholder="Search Sanganer, Bagru, sarees..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="pl-9 bg-neutral-50 border-neutral-200 focus-visible:ring-[#8b1e3f]"
+              className="pl-9 h-10 bg-neutral-50 border-neutral-200 focus-visible:ring-[#8b1e3f]"
             />
           </div>
         </div>
 
+        {/* Install App button - only visible when installable */}
+        {installPrompt && (
+          <Button variant="outline" size="sm" onClick={onInstall} className="border-[#8b1e3f] text-[#8b1e3f] hover:bg-[#8b1e3f] hover:text-white hidden sm:flex">
+            <Download className="h-4 w-4 md:mr-2" />
+            <span className="hidden md:inline">Install App</span>
+          </Button>
+        )}
+
         {/* Auth */}
         {authProcessing ? (
-          <div className="text-xs text-neutral-500 px-3">Signing in...</div>
+          <div className="text-xs text-neutral-500 px-2 hidden sm:block">Signing in...</div>
         ) : user ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="flex items-center gap-2 hover:bg-neutral-100 rounded-full p-1 pr-3 transition">
+              <button className="flex items-center gap-1 sm:gap-2 hover:bg-neutral-100 rounded-full p-1 sm:pr-3 transition">
                 <Avatar className="h-8 w-8">
                   <AvatarImage src={user.picture} alt={user.name} />
                   <AvatarFallback className="bg-[#8b1e3f] text-white text-xs">
@@ -350,6 +373,11 @@ function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onS
               <DropdownMenuSeparator />
               <DropdownMenuItem><UserIcon className="h-4 w-4 mr-2" /> My Orders</DropdownMenuItem>
               <DropdownMenuItem><Heart className="h-4 w-4 mr-2" /> Wishlist</DropdownMenuItem>
+              {installPrompt && (
+                <DropdownMenuItem onClick={onInstall}>
+                  <Download className="h-4 w-4 mr-2" /> Install App
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onSignOut} className="text-red-600 focus:text-red-700">
                 <LogOut className="h-4 w-4 mr-2" /> Sign out
@@ -357,13 +385,13 @@ function Header({ cartCount, onCartClick, search, setSearch, user, onSignIn, onS
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
-          <Button variant="outline" size="sm" onClick={onSignIn} className="border-[#8b1e3f] text-[#8b1e3f] hover:bg-[#8b1e3f] hover:text-white">
-            <LogIn className="h-4 w-4 md:mr-2" />
-            <span className="hidden md:inline">Sign In</span>
+          <Button variant="outline" size="sm" onClick={onSignIn} className="border-[#8b1e3f] text-[#8b1e3f] hover:bg-[#8b1e3f] hover:text-white px-2 sm:px-3">
+            <LogIn className="h-4 w-4 sm:mr-2" />
+            <span className="hidden sm:inline">Sign In</span>
           </Button>
         )}
 
-        <Button variant="ghost" size="sm" onClick={onCartClick} className="relative">
+        <Button variant="ghost" size="sm" onClick={onCartClick} className="relative px-2 sm:px-3">
           <ShoppingBag className="h-5 w-5" />
           <span className="hidden md:inline ml-2">Cart</span>
           {cartCount > 0 && (
@@ -391,12 +419,12 @@ function Hero() {
             <Sparkles className="h-3 w-3 mr-1" /> Indian Hand, Global Heart — Since 2025
           </Badge>
           <h1 className="text-3xl md:text-5xl font-bold text-neutral-900 leading-tight">
-            Premium Indian Fabrics.
+            Authentic Hand Block Prints.
             <br />
-            <span className="text-[#8b1e3f]">Woven with love.</span>
+            <span className="text-[#8b1e3f]">Sanganer & Bagru.</span>
           </h1>
           <p className="mt-4 text-neutral-600 max-w-lg">
-            Handpicked sarees, unstitched suit sets and pure fabrics from India's finest looms — sold per meter, per piece, or as suit-set bundles. Free shipping on orders above ₹999.
+            Handcrafted by master artisans of Rajasthan — Sanganer's delicate florals and Bagru's bold dabu mud-resist prints. Naturally dyed pure cotton sarees, suit sets, dupattas & fabric-by-meter.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Button size="lg" className="bg-[#8b1e3f] hover:bg-[#701731] text-white" onClick={() => document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' })}>
@@ -515,6 +543,9 @@ function ProductCard({ p, onOpen, onAdd, wished, onWish, delay = 0 }) {
         {p.bestSeller && (
           <Badge className="absolute top-2 left-2 bg-amber-500 hover:bg-amber-500 text-white text-[10px]">Bestseller</Badge>
         )}
+        <Badge className="absolute bottom-2 left-2 bg-[#8b1e3f]/90 hover:bg-[#8b1e3f] text-white text-[10px] backdrop-blur">
+          {p.category}
+        </Badge>
         <button
           onClick={(e) => { e.stopPropagation(); onWish() }}
           className="absolute top-2 right-2 h-8 w-8 rounded-full bg-white/90 backdrop-blur flex items-center justify-center shadow hover:bg-white"
@@ -535,7 +566,7 @@ function ProductCard({ p, onOpen, onAdd, wished, onWish, delay = 0 }) {
           <span className="text-xs text-neutral-400 line-through">{rupee(p.mrp)}</span>
           <span className="text-xs font-semibold text-green-700">{discount}% off</span>
         </div>
-        <div className="text-[10px] text-neutral-500 mt-1">per {p.unit} • {p.fabric}</div>
+        <div className="text-[10px] text-neutral-500 mt-1">per {p.unit} • {p.productType || p.fabric}</div>
       </div>
       <div className="px-3 pb-3">
         <Button size="sm" onClick={(e) => { e.stopPropagation(); onAdd() }} className="w-full bg-[#8b1e3f] hover:bg-[#701731]">
@@ -1003,7 +1034,7 @@ function Footer() {
         <div>
           <h4 className="font-semibold text-white mb-3">Shop</h4>
           <ul className="space-y-1 text-sm text-neutral-400">
-            <li>Sarees</li><li>Suit Sets</li><li>Cotton Fabric</li><li>Silk Fabric</li>
+            <li>Sanganer Prints</li><li>Bagru Prints</li><li>Sarees</li><li>Suit Sets</li><li>Dupattas</li><li>Fabric by Meter</li>
           </ul>
         </div>
         <div>
@@ -1021,7 +1052,7 @@ function Footer() {
           </ul>
         </div>
       </div>
-      <div className="border-t border-[#6a1a30] py-4 text-center text-xs text-neutral-400">
+      <div className="border-t border-[#6a1a30] py-4 text-center text-xs text-neutral-400" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
         © 2025 Label Jigyasa. All rights reserved. · GSTIN: XXAAAAA0000A1Z5
       </div>
     </footer>
