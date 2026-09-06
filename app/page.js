@@ -754,8 +754,10 @@ function Row({ label, value }) {
 
 // ---------- CHECKOUT ----------
 function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user }) {
-  const [step, setStep] = useState(1) // 1=address, 2=payment
+  const [step, setStep] = useState(1) // 1=address, 2=payment, 3=upi
   const [placing, setPlacing] = useState(false)
+  const [upiData, setUpiData] = useState(null)
+  const [utr, setUtr] = useState('')
   const [address, setAddress] = useState({
     name: '', phone: '', email: '', pincode: '', line1: '', city: '', state: '', gstin: '',
   })
@@ -764,6 +766,8 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user })
   useEffect(() => {
     if (open) {
       setStep(1)
+      setUpiData(null)
+      setUtr('')
       if (user) setAddress(a => ({ ...a, name: a.name || user.name || '', email: a.email || user.email || '' }))
     }
   }, [open, user])
@@ -798,7 +802,28 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user })
         return
       }
 
-      // Razorpay flow for UPI / CARD / NETBANKING
+      // Direct UPI flow -> pay to merchant VPA (no Razorpay needed)
+      if (payment === 'UPI') {
+        const r = await fetch('/api/upi/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: cart.map(i => ({ id: i.id, qty: i.qty })),
+            address: { ...address, userEmail: user?.email },
+          }),
+        })
+        const d = await r.json()
+        if (d.ok) {
+          setUpiData(d)
+          setStep(3)
+        } else {
+          toast.error(d.error || 'Could not start UPI payment')
+        }
+        setPlacing(false)
+        return
+      }
+
+      // Razorpay flow for CARD / NETBANKING
       // 1. Load checkout.js if not already
       await loadRazorpayScript()
       // 2. Create Razorpay order on server
@@ -870,6 +895,26 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user })
     }
   }
 
+  const confirmUpi = async () => {
+    if (utr.trim().length < 6) { toast.error('Enter your 12-digit UPI reference / UTR'); return }
+    setPlacing(true)
+    try {
+      const r = await fetch('/api/upi/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderNumber: upiData.orderNumber, utr: utr.trim() }),
+      })
+      const d = await r.json()
+      if (d.ok) {
+        toast.success('Payment reference received! 🎉')
+        onSuccess(d.order)
+      } else {
+        toast.error(d.error || 'Could not confirm payment')
+      }
+    } catch { toast.error('Network error') }
+    setPlacing(false)
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
@@ -910,7 +955,7 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user })
                 <h3 className="font-semibold text-sm">Choose Payment Method</h3>
                 <RadioGroup value={payment} onValueChange={setPayment} className="space-y-2">
                   {[
-                    { v: 'UPI', label: 'UPI (Razorpay)', desc: 'GPay, PhonePe, Paytm — instant' },
+                    { v: 'UPI', label: 'UPI — GPay / PhonePe / Paytm', desc: 'Scan QR or pay to our UPI ID directly' },
                     { v: 'CARD', label: 'Credit / Debit Card', desc: 'Visa, MasterCard, RuPay' },
                     { v: 'NETBANKING', label: 'Net Banking', desc: 'All major banks' },
                     { v: 'COD', label: 'Cash on Delivery', desc: '+ ₹49 handling fee' },
@@ -927,7 +972,48 @@ function CheckoutDialog({ open, onOpenChange, cart, subtotal, onSuccess, user })
                 <div className="flex gap-2 mt-4">
                   <Button variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
                   <Button disabled={placing} onClick={placeOrder} className="flex-1 bg-[#8b1e3f] hover:bg-[#701731]">
-                    {placing ? 'Placing order...' : `Place Order • ${rupee(total)}`}
+                    {placing ? 'Please wait...' : payment === 'UPI' ? `Pay with UPI • ${rupee(total)}` : `Place Order • ${rupee(total)}`}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {step === 3 && upiData && (
+              <div className="space-y-4">
+                <h3 className="font-semibold text-sm">Pay {rupee(upiData.total)} via UPI</h3>
+                <div className="flex flex-col items-center gap-3 border rounded-lg p-4 bg-neutral-50">
+                  <img src={upiData.qr} alt="UPI payment QR code" className="h-48 w-48 rounded-md bg-white p-2" />
+                  <div className="text-center">
+                    <div className="text-xs text-neutral-500">Scan with any UPI app, or pay to</div>
+                    <button
+                      type="button"
+                      onClick={() => { navigator.clipboard.writeText(upiData.vpa); toast.success('UPI ID copied') }}
+                      className="font-semibold text-[#8b1e3f] hover:underline inline-flex items-center gap-1 mt-0.5"
+                    >
+                      {upiData.vpa} <Copy className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <a href={upiData.upiLink} className="w-full">
+                    <Button type="button" variant="outline" className="w-full">Open UPI App</Button>
+                  </a>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">After paying, enter the UPI reference / UTR number *</Label>
+                  <Input
+                    value={utr}
+                    inputMode="numeric"
+                    maxLength={20}
+                    placeholder="e.g. 412345678901"
+                    onChange={e => setUtr(e.target.value.replace(/\s/g, ''))}
+                  />
+                  <p className="text-[11px] text-neutral-500 leading-relaxed">
+                    You&apos;ll find this 12-digit reference in your UPI app payment history. We&apos;ll verify and confirm your order.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setStep(2)} className="flex-1">Back</Button>
+                  <Button disabled={placing} onClick={confirmUpi} className="flex-1 bg-[#8b1e3f] hover:bg-[#701731]">
+                    {placing ? 'Confirming...' : "I've Paid"}
                   </Button>
                 </div>
               </div>
