@@ -4,11 +4,16 @@ import { v4 as uuidv4 } from 'uuid'
 import Razorpay from 'razorpay'
 import crypto from 'node:crypto'
 
-const uri = process.env.MONGO_URL
+const uri = process.env.MONGODB_URI || process.env.MONGO_URL
 const dbName = process.env.DB_NAME || 'jigyasa_fabrics'
 
 let cachedClient = null
 async function getDb() {
+  if (!uri) {
+    throw new Error(
+      'Missing MongoDB connection string. Set MONGODB_URI (provided by the MongoDB Atlas integration).'
+    )
+  }
   if (!cachedClient) {
     cachedClient = new MongoClient(uri)
     await cachedClient.connect()
