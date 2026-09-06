@@ -3,6 +3,23 @@ import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
 import Razorpay from 'razorpay'
 import crypto from 'node:crypto'
+import QRCode from 'qrcode'
+
+// Direct UPI (VPA) payee config — payments collect straight to this UPI ID.
+const UPI_VPA = process.env.UPI_VPA || '9680000139@ybl'
+const UPI_PAYEE_NAME = process.env.UPI_PAYEE_NAME || 'Jigyasa Fabrics'
+
+function buildUpiLink({ amount, note, ref }) {
+  const params = new URLSearchParams({
+    pa: UPI_VPA,
+    pn: UPI_PAYEE_NAME,
+    am: Number(amount).toFixed(2),
+    cu: 'INR',
+    tn: note || 'Jigyasa Fabrics order',
+  })
+  if (ref) params.set('tr', ref)
+  return `upi://pay?${params.toString()}`
+}
 
 const uri = process.env.MONGODB_URI || process.env.MONGO_URL
 const dbName = process.env.DB_NAME || 'jigyasa_fabrics'
@@ -217,15 +234,32 @@ const SEED_PRODUCTS = [
 ]
 
 async function ensureSeed(db) {
-  // Atomic guard: only ONE concurrent request can pass this check
-  const claim = await db.collection('_meta').findOneAndUpdate(
-    { key: 'seed', version: { $lt: SEED_VERSION } },
-    { $set: { key: 'seed', version: SEED_VERSION, seedingAt: new Date() } },
-    { upsert: true, returnDocument: 'before' }
-  )
-  // If the "before" doc already has version >= SEED_VERSION, another request already seeded
-  const prev = claim?.value || claim
-  if (prev && prev.version >= SEED_VERSION) return
+  // Fast path: already seeded at the current version with products present.
+  // Without this, the collection is wiped and re-seeded on every request,
+  // regenerating product ids and breaking carts / checkout.
+  const meta = await db.collection('_meta').findOne({ key: 'seed' })
+  const count = await db.collection('products').estimatedDocumentCount()
+  if (meta && meta.version >= SEED_VERSION && count > 0) return
+
+  // Atomic claim so only ONE concurrent request seeds. A unique index on `key`
+  // turns a losing concurrent upsert into a duplicate-key error we can ignore.
+  await db.collection('_meta').createIndex({ key: 1 }, { unique: true }).catch(() => {})
+
+  let claimed = false
+  try {
+    const res = await db.collection('_meta').updateOne(
+      { key: 'seed', version: { $lt: SEED_VERSION } },
+      { $set: { version: SEED_VERSION, seedingAt: new Date() } },
+      { upsert: true }
+    )
+    claimed = res.upsertedCount > 0 || res.modifiedCount > 0
+  } catch (e) {
+    if (e?.code === 11000) return // another request already claimed the seed
+    throw e
+  }
+  // Re-seed if we won the claim, or if products are missing despite a current version.
+  if (!claimed && count > 0) return
+
   try {
     await db.collection('products').deleteMany({})
     const docs = SEED_PRODUCTS.map(p => ({
@@ -488,6 +522,88 @@ async function handler(request, ctx) {
       }
       await db.collection('orders').insertOne({ ...order })
       return NextResponse.json({ ok: true, order })
+    }
+
+    // =========== DIRECT UPI (pay to VPA) ===========
+    // POST /api/upi/create-order  { items:[{id,qty}], address }
+    // Server computes authoritative total, creates a pending order and returns a UPI link + QR.
+    if (method === 'POST' && path === 'upi/create-order') {
+      const body = await request.json()
+      const { items = [], address = {} } = body
+      if (!items.length) return NextResponse.json({ error: 'No items' }, { status: 400 })
+
+      const ids = items.map(i => i.id)
+      const products = await db.collection('products').find({ id: { $in: ids } }, { projection: { _id: 0 } }).toArray()
+      const priceMap = Object.fromEntries(products.map(p => [p.id, p]))
+
+      let subtotal = 0
+      const validated = []
+      for (const it of items) {
+        const p = priceMap[it.id]
+        if (!p) return NextResponse.json({ error: `Product ${it.id} not found` }, { status: 400 })
+        const qty = Math.max(1, Number(it.qty) || 1)
+        subtotal += p.price * qty
+        validated.push({ id: p.id, name: p.name, price: p.price, mrp: p.mrp, image: p.image, unit: p.unit, qty })
+      }
+      const shipping = subtotal > 999 ? 0 : 79
+      const tax = Math.round(subtotal * 0.05)
+      const total = subtotal + shipping + tax
+
+      const orderNumber = 'JF' + Date.now().toString().slice(-8)
+      const upiLink = buildUpiLink({ amount: total, note: `Order ${orderNumber}`, ref: orderNumber })
+      const qr = await QRCode.toDataURL(upiLink, { width: 320, margin: 1 })
+
+      const order = {
+        id: uuidv4(),
+        orderNumber,
+        items: validated,
+        address,
+        payment: { method: 'UPI', status: 'awaiting_payment', vpa: UPI_VPA },
+        subtotal, shipping, tax, total,
+        status: 'pending_payment',
+        awb: 'AWB' + Math.floor(1e9 + Math.random() * 9e9),
+        trackingUrl: 'https://shiprocket.co/tracking/',
+        estimatedDelivery: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString(),
+        createdAt: new Date().toISOString(),
+      }
+      await db.collection('orders').insertOne({ ...order })
+
+      return NextResponse.json({
+        ok: true,
+        orderNumber,
+        total,
+        vpa: UPI_VPA,
+        payeeName: UPI_PAYEE_NAME,
+        upiLink,
+        qr,
+        breakdown: { items: validated, subtotal, shipping, tax, total },
+      })
+    }
+
+    // POST /api/upi/confirm  { orderNumber, utr }
+    // Customer submits their UPI transaction reference; order awaits admin verification.
+    if (method === 'POST' && path === 'upi/confirm') {
+      const body = await request.json()
+      const { orderNumber, utr } = body
+      if (!orderNumber) return NextResponse.json({ error: 'Missing order number' }, { status: 400 })
+      const ref = String(utr || '').trim()
+      if (ref.length < 6) return NextResponse.json({ error: 'Enter a valid UPI reference / UTR' }, { status: 400 })
+
+      const r = await db.collection('orders').findOneAndUpdate(
+        { orderNumber },
+        {
+          $set: {
+            'payment.status': 'submitted',
+            'payment.utr': ref,
+            status: 'confirmed',
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } }
+      )
+      const updated = r?.value || r
+      if (!updated) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+      return NextResponse.json({ ok: true, order: updated })
     }
 
     // =========== CHIPA AI CHATBOT ===========
