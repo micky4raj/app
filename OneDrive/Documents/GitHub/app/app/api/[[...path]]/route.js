@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import Razorpay from 'razorpay'
 import crypto from 'node:crypto'
 import QRCode from 'qrcode'
+import { validateStock, decrementStock, calculateOrderTotals } from '@/lib/stock'
 
 // Direct UPI (VPA) payee config — payments collect straight to this UPI ID.
 const UPI_VPA = process.env.UPI_VPA || '9680000139@ybl'
@@ -447,9 +448,14 @@ async function handler(request, ctx) {
         subtotal += p.price * qty
         validated.push({ id: p.id, name: p.name, price: p.price, mrp: p.mrp, image: p.image, unit: p.unit, qty })
       }
-      const shipping = subtotal > 999 ? 0 : 79
-      const tax = Math.round(subtotal * 0.05)
-      const total = subtotal + shipping + tax
+
+      try {
+        validateStock(items, products)
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 })
+      }
+
+      const { shipping, tax, total } = calculateOrderTotals(validated)
       const amountPaise = total * 100
 
       const receipt = 'rcpt_' + uuidv4().replaceAll('-', '').slice(0, 20)
@@ -497,9 +503,14 @@ async function handler(request, ctx) {
         if (!p) return NextResponse.json({ error: 'Product changed' }, { status: 400 })
         subtotal += p.price * Math.max(1, Number(it.qty) || 1)
       }
-      const shipping = subtotal > 999 ? 0 : 79
-      const tax = Math.round(subtotal * 0.05)
-      const total = subtotal + shipping + tax
+
+      try {
+        validateStock(items, products)
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 })
+      }
+
+      const { shipping, tax, total } = calculateOrderTotals(items.map(it => ({ ...it, price: priceMap[it.id].price })))
 
       const order = {
         id: uuidv4(),
@@ -520,6 +531,14 @@ async function handler(request, ctx) {
         estimatedDelivery: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString(),
         createdAt: new Date().toISOString(),
       }
+
+      const updatedProducts = decrementStock(items, products)
+      await Promise.all(
+        updatedProducts.map((product) =>
+          db.collection('products').updateOne({ id: product.id }, { $set: { stock: product.stock } })
+        )
+      )
+
       await db.collection('orders').insertOne({ ...order })
       return NextResponse.json({ ok: true, order })
     }
@@ -545,9 +564,14 @@ async function handler(request, ctx) {
         subtotal += p.price * qty
         validated.push({ id: p.id, name: p.name, price: p.price, mrp: p.mrp, image: p.image, unit: p.unit, qty })
       }
-      const shipping = subtotal > 999 ? 0 : 79
-      const tax = Math.round(subtotal * 0.05)
-      const total = subtotal + shipping + tax
+
+      try {
+        validateStock(items, products)
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 })
+      }
+
+      const { shipping, tax, total } = calculateOrderTotals(validated)
 
       const orderNumber = 'JF' + Date.now().toString().slice(-8)
       const upiLink = buildUpiLink({ amount: total, note: `Order ${orderNumber}`, ref: orderNumber })
@@ -589,6 +613,18 @@ async function handler(request, ctx) {
       const ref = String(utr || '').trim()
       if (ref.length < 6) return NextResponse.json({ error: 'Enter a valid UPI reference / UTR' }, { status: 400 })
 
+      const existing = await db.collection('orders').findOne({ orderNumber }, { projection: { _id: 0 } })
+      if (!existing) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+
+      const productIds = existing.items.map((item) => item.id)
+      const productDocs = await db.collection('products').find({ id: { $in: productIds } }, { projection: { _id: 0 } }).toArray()
+      const updatedProducts = decrementStock(existing.items, productDocs)
+      await Promise.all(
+        updatedProducts.map((product) =>
+          db.collection('products').updateOne({ id: product.id }, { $set: { stock: product.stock } })
+        )
+      )
+
       const r = await db.collection('orders').findOneAndUpdate(
         { orderNumber },
         {
@@ -602,7 +638,6 @@ async function handler(request, ctx) {
         { returnDocument: 'after', projection: { _id: 0 } }
       )
       const updated = r?.value || r
-      if (!updated) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
       return NextResponse.json({ ok: true, order: updated })
     }
 
@@ -750,6 +785,15 @@ BEHAVIOR RULES:
       if (!address.name || !address.phone || !address.pincode || !address.line1) {
         return NextResponse.json({ error: 'Address incomplete' }, { status: 400 })
       }
+      const productIds = items.map((item) => item.id)
+      const productDocs = await db.collection('products').find({ id: { $in: productIds } }, { projection: { _id: 0 } }).toArray()
+      const updatedProducts = decrementStock(items, productDocs)
+      await Promise.all(
+        updatedProducts.map((product) =>
+          db.collection('products').updateOne({ id: product.id }, { $set: { stock: product.stock } })
+        )
+      )
+
       const order = {
         id: uuidv4(),
         orderNumber: 'JF' + Date.now().toString().slice(-8),

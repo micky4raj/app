@@ -8,7 +8,6 @@ export const metadata = {
   applicationName: 'Label Jigyasa',
   keywords: ['Sanganer print', 'Bagru print', 'block print saree', 'hand block print', 'Rajasthani textiles', 'natural dye', 'dabu print', 'cotton suit set'],
   manifest: '/manifest.json',
-  themeColor: '#8b1e3f',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
